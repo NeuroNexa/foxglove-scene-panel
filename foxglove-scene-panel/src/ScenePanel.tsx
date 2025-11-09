@@ -317,13 +317,13 @@ function ScenePanel({ context }: { context: PanelExtensionContext }): ReactEleme
   const interactionButtons = [
     {
       mode: "initialPose" as InteractionMode,
-      title: "2D Pose Estimate",
+      title: "3D Pose Estimate",
       subtitle: config.interactionTopics.initialPose,
       icon: "pose",
     },
     {
       mode: "goalPose" as InteractionMode,
-      title: "2D Pose Goal",
+      title: "3D Pose Goal",
       subtitle: config.interactionTopics.goalPose,
       icon: "goal",
     },
@@ -600,12 +600,12 @@ function buildSettingsTree(args: SettingsBuilderArgs): SettingsTree {
       label: "发布",
       fields: {
         initialPoseTopic: {
-          label: "2D Pose Estimate",
+          label: "3D Pose Estimate",
           input: "string",
           value: args.config.interactionTopics.initialPose,
         },
         goalPoseTopic: {
-          label: "2D Pose Goal",
+          label: "3D Pose Goal",
           input: "string",
           value: args.config.interactionTopics.goalPose,
         },

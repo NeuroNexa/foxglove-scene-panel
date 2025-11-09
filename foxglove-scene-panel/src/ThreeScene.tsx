@@ -2,6 +2,7 @@ import { ReactElement, useEffect, useRef } from "react";
 import {
   AxesHelper,
   Box3,
+  BoxGeometry,
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
@@ -23,6 +24,7 @@ import {
   Quaternion,
   Raycaster,
   Scene,
+  SphereGeometry,
   Sprite,
   SpriteMaterial,
   Vector2,
@@ -63,12 +65,21 @@ const PREVIEW_BODY_RADIUS = 0.06;
 const PREVIEW_HEAD_RATIO = 0.3;
 const PREVIEW_HEAD_MIN = 0.25;
 const PREVIEW_BODY_MIN = 0.05;
+const HEIGHT_MIN = -10;
+const HEIGHT_MAX = 60;
 
 type PreviewArrow = {
   group: Group;
   body: Mesh;
   head: Mesh;
   ring: Mesh;
+  dispose: () => void;
+};
+
+type HeightGizmo = {
+  group: Group;
+  shaft: Mesh;
+  handle: Mesh;
   dispose: () => void;
 };
 
@@ -87,6 +98,12 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
   const previewRef = useRef<PreviewArrow>();
   const clickStateRef = useRef<ClickState>();
   const poseBaseRef = useRef<Vector3>();
+  const poseDirectionRef = useRef<Vector3 | undefined>(undefined);
+  const posePreviewLengthRef = useRef(0.3);
+  const poseHeightRef = useRef(0);
+  const heightGizmoRef = useRef<HeightGizmo>();
+  const heightDragActiveRef = useRef(false);
+  const heightDragOffsetRef = useRef(0);
   const animationRef = useRef<number>();
   const resizeObserverRef = useRef<ResizeObserver>();
   const raycasterRef = useRef(new Raycaster());
@@ -154,6 +171,10 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
     scene.add(previewArrow.group);
     previewRef.current = previewArrow;
 
+    const heightGizmo = createHeightGizmo();
+    scene.add(heightGizmo.group);
+    heightGizmoRef.current = heightGizmo;
+
     containerRef.current.appendChild(renderer.domElement);
 
     const resizeObserver = new ResizeObserver(() => {
@@ -186,6 +207,7 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
         cancelAnimationFrame(animationRef.current);
       }
       previewRef.current?.dispose();
+      heightGizmoRef.current?.dispose();
       renderer.dispose();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -210,6 +232,7 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
     poseBaseRef.current = undefined;
     clickStateRef.current = undefined;
     hidePreviewArrow();
+    hideHeightGizmo();
   }, [interactionMode]);
 
   function resizeRenderer(): void {
@@ -388,7 +411,185 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
     camera.updateProjectionMatrix();
   }
 
+  function showPreviewAtBase(base: Vector3): void {
+    const preview = previewRef.current;
+    if (!preview) {
+      return;
+    }
+    posePreviewLengthRef.current = 0.3;
+    preview.group.position.copy(base);
+    updatePreviewArrow(preview, new Vector3(1, 0, 0), posePreviewLengthRef.current);
+    preview.group.visible = true;
+    preview.group.updateMatrixWorld(true);
+  }
+
+  function hidePreviewArrow(): void {
+    posePreviewLengthRef.current = 0.3;
+    poseDirectionRef.current = undefined;
+    if (previewRef.current) {
+      previewRef.current.group.visible = false;
+    }
+  }
+
+  function setInteractionPlaneHeight(height: number): void {
+    const clamped = Math.max(HEIGHT_MIN, Math.min(HEIGHT_MAX, height));
+    poseHeightRef.current = clamped;
+    planeRef.current.constant = -clamped;
+  }
+
+  function showHeightGizmo(base: Vector3): void {
+    const gizmo = heightGizmoRef.current;
+    if (!gizmo) {
+      return;
+    }
+    gizmo.group.position.set(base.x, base.y, 0);
+    updateHeightGizmo(base.z);
+    gizmo.group.visible = true;
+  }
+
+  function hideHeightGizmo(): void {
+    heightDragActiveRef.current = false;
+    const gizmo = heightGizmoRef.current;
+    if (gizmo) {
+      gizmo.group.visible = false;
+    }
+  }
+
+  function updateHeightGizmo(targetHeight: number): void {
+    const gizmo = heightGizmoRef.current;
+    const base = poseBaseRef.current;
+    if (!gizmo || !base) {
+      return;
+    }
+    const clamped = Math.max(HEIGHT_MIN, Math.min(HEIGHT_MAX, targetHeight));
+    const span = Math.max(clamped - HEIGHT_MIN, 0.01);
+    gizmo.shaft.scale.set(1, 1, span);
+    gizmo.shaft.position.set(0, 0, HEIGHT_MIN + span / 2);
+    gizmo.handle.position.set(0, 0, clamped);
+    gizmo.group.position.set(base.x, base.y, 0);
+    gizmo.group.updateMatrixWorld(true);
+  }
+
+  function pickHeightGizmo(event: PointerEvent): boolean {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    const gizmo = heightGizmoRef.current;
+    if (!renderer || !camera || !gizmo || !gizmo.group.visible) {
+      return false;
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    pointerRef.current.set(x, y);
+    raycasterRef.current.setFromCamera(pointerRef.current, camera);
+    const intersects = raycasterRef.current.intersectObjects([gizmo.handle, gizmo.shaft], false);
+    return intersects.length > 0;
+  }
+
+  function maybeStartHeightDrag(event: PointerEvent): boolean {
+    const mode = callbacksRef.current.interactionMode;
+    if (mode !== "initialPose" && mode !== "goalPose") {
+      return false;
+    }
+    if (!poseBaseRef.current) {
+      return false;
+    }
+
+    const hit = pickHeightGizmo(event);
+    if (!hit) {
+      return false;
+    }
+
+    const projected = heightFromPointer(event);
+    if (projected === undefined) {
+      return false;
+    }
+
+    heightDragOffsetRef.current = poseHeightRef.current - projected;
+
+    heightDragActiveRef.current = true;
+    clickStateRef.current = undefined;
+    if (controlsRef.current) {
+      controlsRef.current.enabled = false;
+    }
+    return true;
+  }
+
+  function finishHeightDrag(): void {
+    heightDragActiveRef.current = false;
+    heightDragOffsetRef.current = 0;
+    if (controlsRef.current) {
+      controlsRef.current.enabled = true;
+    }
+  }
+
+  function updateHeightFromPointer(event: PointerEvent): void {
+    const base = poseBaseRef.current;
+    if (!base) {
+      return;
+    }
+
+    const projected = heightFromPointer(event);
+    if (projected === undefined) {
+      return;
+    }
+    const desired = projected + heightDragOffsetRef.current;
+    const clamped = Math.max(HEIGHT_MIN, Math.min(HEIGHT_MAX, desired));
+    setInteractionPlaneHeight(clamped);
+    base.z = clamped;
+    updateHeightGizmo(clamped);
+    const preview = previewRef.current;
+    if (preview) {
+      preview.group.position.set(base.x, base.y, base.z);
+      const direction = poseDirectionRef.current ? poseDirectionRef.current.clone() : new Vector3(1, 0, 0);
+      const length = poseDirectionRef.current ? Math.max(posePreviewLengthRef.current, 0.05) : 0.3;
+      updatePreviewArrow(preview, direction, length);
+      preview.group.visible = true;
+      preview.group.updateMatrixWorld(true);
+    }
+  }
+
+  function heightFromPointer(event: PointerEvent): number | undefined {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    const base = poseBaseRef.current;
+    if (!renderer || !camera || !base) {
+      return undefined;
+    }
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    pointerRef.current.set(x, y);
+    raycasterRef.current.setFromCamera(pointerRef.current, camera);
+
+    const rayOrigin = raycasterRef.current.ray.origin;
+    const rayDir = raycasterRef.current.ray.direction;
+    const axisPoint = new Vector3(base.x, base.y, HEIGHT_MIN);
+    const axisDir = new Vector3(0, 0, 1);
+
+    const w0 = rayOrigin.clone().sub(axisPoint);
+    const a = rayDir.dot(rayDir);
+    const b = rayDir.dot(axisDir);
+    const c = axisDir.dot(axisDir);
+    const d = rayDir.dot(w0);
+    const e = axisDir.dot(w0);
+    const denom = a * c - b * b;
+    if (Math.abs(denom) < 1e-6) {
+      return undefined;
+    }
+    const t = (a * e - b * d) / denom;
+    if (!Number.isFinite(t)) {
+      return undefined;
+    }
+    return Math.max(HEIGHT_MIN, Math.min(HEIGHT_MAX, t));
+  }
+
   function handlePointerDown(event: PointerEvent): void {
+    if (maybeStartHeightDrag(event)) {
+      event.preventDefault();
+      return;
+    }
     const { interactionMode: mode, publishingEnabled } = callbacksRef.current;
     if (!publishingEnabled || mode === "none") {
       clickStateRef.current = undefined;
@@ -407,6 +608,11 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
   }
 
   function handlePointerMove(event: PointerEvent): void {
+    if (heightDragActiveRef.current) {
+      event.preventDefault();
+      updateHeightFromPointer(event);
+      return;
+    }
     const tracker = clickStateRef.current;
     if (tracker && tracker.pointerId === event.pointerId && tracker.button === 0) {
       const dx = event.clientX - tracker.downPos.x;
@@ -416,6 +622,10 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
       }
     }
 
+    const mode = callbacksRef.current.interactionMode;
+    if (mode !== "initialPose" && mode !== "goalPose") {
+      return;
+    }
     if (!poseBaseRef.current) {
       return;
     }
@@ -433,13 +643,22 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
       return;
     }
     direction.normalize();
-    updatePreviewArrow(preview, direction, Math.max(length, 0.05));
+    poseDirectionRef.current = direction.clone();
+    posePreviewLengthRef.current = Math.max(length, 0.05);
+    updatePreviewArrow(preview, direction, posePreviewLengthRef.current);
     preview.group.position.copy(poseBaseRef.current);
     preview.group.visible = true;
     preview.group.updateMatrixWorld(true);
   }
 
   function handlePointerUp(event: PointerEvent): void {
+    if (heightDragActiveRef.current) {
+      if (event.button === 0) {
+        event.preventDefault();
+        finishHeightDrag();
+      }
+      return;
+    }
     const tracker = clickStateRef.current;
     if (!tracker || tracker.pointerId !== event.pointerId || tracker.button !== event.button) {
       return;
@@ -472,7 +691,11 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
       const base = poseBaseRef.current;
       if (!base) {
         poseBaseRef.current = point.clone();
+        setInteractionPlaneHeight(point.z);
+        poseDirectionRef.current = undefined;
+        posePreviewLengthRef.current = 0.3;
         showPreviewAtBase(point);
+        showHeightGizmo(point);
         return;
       }
 
@@ -491,7 +714,9 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
         yaw: Math.atan2(direction.y, direction.x),
       });
       poseBaseRef.current = undefined;
+      poseDirectionRef.current = undefined;
       hidePreviewArrow();
+      hideHeightGizmo();
     }
   }
 
@@ -513,23 +738,6 @@ export function ThreeScene(props: ThreeSceneProps): ReactElement {
       return undefined;
     }
     return target.clone();
-  }
-
-  function showPreviewAtBase(base: Vector3): void {
-    const preview = previewRef.current;
-    if (!preview) {
-      return;
-    }
-    preview.group.position.copy(base);
-    updatePreviewArrow(preview, new Vector3(1, 0, 0), 0.3);
-    preview.group.visible = true;
-    preview.group.updateMatrixWorld(true);
-  }
-
-  function hidePreviewArrow(): void {
-    if (previewRef.current) {
-      previewRef.current.group.visible = false;
-    }
   }
 
   return <div ref={containerRef} style={{ height: "100%", width: "100%" }} />;
@@ -621,6 +829,33 @@ function updatePreviewArrow(preview: PreviewArrow, direction: Vector3, length: n
 
   tempQuaternion.setFromUnitVectors(baseDirection, direction);
   preview.group.setRotationFromQuaternion(tempQuaternion);
+}
+
+function createHeightGizmo(): HeightGizmo {
+  const group = new Group();
+  group.visible = false;
+
+  const shaftGeometry = new BoxGeometry(0.02, 0.02, 1);
+  const shaftMaterial = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+  const shaft = new Mesh(shaftGeometry, shaftMaterial);
+
+  const handleGeometry = new SphereGeometry(0.08, 24, 16);
+  const handleMaterial = new MeshBasicMaterial({ color: PREVIEW_COLOR });
+  const handle = new Mesh(handleGeometry, handleMaterial);
+
+  group.add(shaft, handle);
+
+  return {
+    group,
+    shaft,
+    handle,
+    dispose: () => {
+      shaftGeometry.dispose();
+      shaftMaterial.dispose();
+      handleGeometry.dispose();
+      handleMaterial.dispose();
+    },
+  };
 }
 
 function disposeFrame(group: Group): void {
