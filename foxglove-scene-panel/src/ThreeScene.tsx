@@ -61,10 +61,10 @@ type ClickState = {
 const DEFAULT_POINT_COLOR = new Color("#3aa0ff");
 const PREVIEW_COLOR = 0xff2ad9;
 const PREVIEW_HIGHLIGHT_COLOR = 0xff7bff;
-const PREVIEW_BODY_RADIUS = 0.24;
+const PREVIEW_BODY_RADIUS = 0.12;
 const PREVIEW_HEAD_RATIO = 0.3;
-const PREVIEW_HEAD_MIN = 1.0;
-const PREVIEW_BODY_MIN = 0.2;
+const PREVIEW_HEAD_MIN = 0.5;
+const PREVIEW_BODY_MIN = 0.1;
 const HEIGHT_MIN = -10;
 const HEIGHT_MAX = 60;
 
@@ -839,11 +839,11 @@ function createHeightGizmo(): HeightGizmo {
   const group = new Group();
   group.visible = false;
 
-  const shaftGeometry = new BoxGeometry(0.08, 0.08, 1);
+  const shaftGeometry = new BoxGeometry(0.04, 0.04, 1);
   const shaftMaterial = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
   const shaft = new Mesh(shaftGeometry, shaftMaterial);
 
-  const handleGeometry = new SphereGeometry(0.32, 32, 20);
+  const handleGeometry = new SphereGeometry(0.16, 32, 20);
   const handleMaterial = new MeshBasicMaterial({ color: PREVIEW_COLOR });
   const handle = new Mesh(handleGeometry, handleMaterial);
 
