@@ -155,6 +155,20 @@ function ScenePanel({ context }: { context: PanelExtensionContext }): ReactEleme
   }, [context, config.pointCloudTopics, config.tfStaticTopic, config.tfTopic]);
 
   useEffect(() => {
+    const store = pointCloudStoreRef.current;
+    let removed = false;
+    for (const topic of Array.from(store.keys())) {
+      if (!config.pointCloudTopics.includes(topic)) {
+        store.delete(topic);
+        removed = true;
+      }
+    }
+    if (removed) {
+      setPointCloudVersion((value) => value + 1);
+    }
+  }, [config.pointCloudTopics]);
+
+  useEffect(() => {
     if (!currentFrame || currentFrame.length === 0) {
       return;
     }
